@@ -1,0 +1,28 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*.class
+
+# Virtual environments
+.venv/
+venv/
+
+# Experiment outputs and datasets
+exp/
+exp/**
+exp/datasets/
+exp/image_samples/
+exp/logs/
+
+# OS and editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Misc
+*.npy
+*.npz
+*.pt
+*.pth
+*.ckpt

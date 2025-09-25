@@ -62,6 +62,15 @@ def parse_args_and_config():
         default="info",
         help="Verbose level: info | debug | warning | critical",
     )
+    # Inpainting mask params (for custom inpainting_* tasks)
+    parser.add_argument(
+        "--mask_len_range", type=int, nargs=2, default=None,
+        help="[min_len max_len] for box mask side length (in pixels)"
+    )
+    parser.add_argument(
+        "--mask_prob_range", type=float, nargs=2, default=None,
+        help="[min_prob max_prob] for random keep probability"
+    )
     parser.add_argument(
         "--ni",
         action="store_true",

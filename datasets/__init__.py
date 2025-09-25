@@ -10,6 +10,31 @@ import numpy as np
 import torchvision
 from PIL import Image
 from functools import partial
+from torch.utils.data import Dataset
+class ImageListDataset(Dataset):
+    def __init__(self, root, transform=None):
+        self.root = root
+        self.transform = transform
+        exts = {'.jpg', '.jpeg', '.png', '.bmp', '.webp'}
+        files = []
+        if os.path.isdir(root):
+            for name in sorted(os.listdir(root)):
+                path = os.path.join(root, name)
+                if os.path.isfile(path) and os.path.splitext(name)[1].lower() in exts:
+                    files.append(path)
+        self.files = files
+
+    def __len__(self):
+        return len(self.files)
+
+    def __getitem__(self, idx):
+        path = self.files[idx]
+        with open(path, 'rb') as f:
+            img = Image.open(f).convert('RGB')
+        if self.transform is not None:
+            img = self.transform(img)
+        # dummy label for compatibility
+        return img, 0
 
 class Crop(object):
     def __init__(self, x1, x2, y1, y2):
@@ -142,11 +167,15 @@ def get_dataset(args, config):
             )
             test_dataset = dataset
         else:
-            dataset = torchvision.datasets.ImageFolder(
-                os.path.join(args.exp, "datasets", args.path_y),#os.path.join(args.exp, "datasets", "celeba_hq"),
-                transform=transforms.Compose([transforms.Resize([config.data.image_size, config.data.image_size]),
-                                              transforms.ToTensor()])
-            )
+            folder = os.path.join(args.exp, "datasets", args.path_y)
+            transform = transforms.Compose([transforms.Resize([config.data.image_size, config.data.image_size]),
+                                            transforms.ToTensor()])
+            # If folder contains class subfolders, use ImageFolder; otherwise, load flat image list
+            has_subdirs = any(os.path.isdir(os.path.join(folder, d)) for d in os.listdir(folder)) if os.path.isdir(folder) else False
+            if has_subdirs:
+                dataset = torchvision.datasets.ImageFolder(folder, transform=transform)
+            else:
+                dataset = ImageListDataset(folder, transform=transform)
             num_items = len(dataset)
             indices = list(range(num_items))
             random_state = np.random.get_state()

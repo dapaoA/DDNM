@@ -135,7 +135,39 @@ class Diffusion(object):
                              ckpt)
             else:
                 raise ValueError
-            model.load_state_dict(torch.load(ckpt, map_location=self.device))
+            _ckpt_obj = torch.load(ckpt, map_location=self.device)
+            _state_dict = _ckpt_obj
+            if isinstance(_ckpt_obj, dict):
+                for key in [
+                    "state_dict",
+                    "model",
+                    "ema",
+                    "ema_state_dict",
+                    "model_ema",
+                    "net",
+                    "module",
+                    "params",
+                ]:
+                    if key in _ckpt_obj and isinstance(_ckpt_obj[key], dict):
+                        _state_dict = _ckpt_obj[key]
+                        break
+                if "ema" in _state_dict and isinstance(_state_dict["ema"], dict):
+                    _state_dict = _state_dict["ema"]
+            
+            # Fix parameter name mismatch: remove 'model.' prefix if present
+            fixed_state_dict = {}
+            for key, value in _state_dict.items():
+                if key.startswith('model.'):
+                    new_key = key[6:]  # Remove 'model.' prefix
+                    fixed_state_dict[new_key] = value
+                else:
+                    fixed_state_dict[key] = value
+            
+            missing, unexpected = model.load_state_dict(fixed_state_dict, strict=False)
+            if len(unexpected) > 0:
+                print(f"[warn] Unexpected keys ignored when loading checkpoint: {unexpected[:8]}{' ...' if len(unexpected)>8 else ''}")
+            if len(missing) > 0:
+                print(f"[warn] Missing keys when loading checkpoint: {missing[:8]}{' ...' if len(missing)>8 else ''}")
             model.to(self.device)
             model = torch.nn.DataParallel(model)
 
@@ -158,7 +190,39 @@ class Diffusion(object):
                         'https://openaipublic.blob.core.windows.net/diffusion/jul-2021/256x256_diffusion_uncond.pt',
                         ckpt)
 
-            model.load_state_dict(torch.load(ckpt, map_location=self.device))
+            _ckpt_obj = torch.load(ckpt, map_location=self.device)
+            _state_dict = _ckpt_obj
+            if isinstance(_ckpt_obj, dict):
+                for key in [
+                    "state_dict",
+                    "model",
+                    "ema",
+                    "ema_state_dict",
+                    "model_ema",
+                    "net",
+                    "module",
+                    "params",
+                ]:
+                    if key in _ckpt_obj and isinstance(_ckpt_obj[key], dict):
+                        _state_dict = _ckpt_obj[key]
+                        break
+                if "ema" in _state_dict and isinstance(_state_dict["ema"], dict):
+                    _state_dict = _state_dict["ema"]
+            
+            # Fix parameter name mismatch: remove 'model.' prefix if present
+            fixed_state_dict = {}
+            for key, value in _state_dict.items():
+                if key.startswith('model.'):
+                    new_key = key[6:]  # Remove 'model.' prefix
+                    fixed_state_dict[new_key] = value
+                else:
+                    fixed_state_dict[key] = value
+            
+            missing, unexpected = model.load_state_dict(fixed_state_dict, strict=False)
+            if len(unexpected) > 0:
+                print(f"[warn] Unexpected keys ignored when loading checkpoint: {unexpected[:8]}{' ...' if len(unexpected)>8 else ''}")
+            if len(missing) > 0:
+                print(f"[warn] Missing keys when loading checkpoint: {missing[:8]}{' ...' if len(missing)>8 else ''}")
             model.to(self.device)
             model.eval()
             model = torch.nn.DataParallel(model)
@@ -252,9 +316,85 @@ class Diffusion(object):
             scale=round(args.deg_scale)
             A = torch.nn.AdaptiveAvgPool2d((256//scale,256//scale))
             Ap = lambda z: MeanUpsample(z,scale)
+        elif args.deg =='sr_bicubic':
+            import torch.nn.functional as F
+            scale = round(args.deg_scale)
+            # Downsample and upsample using bicubic interpolation
+            A = lambda z: F.interpolate(z, scale_factor=1.0/scale, mode='bicubic', align_corners=False, recompute_scale_factor=False)
+            Ap = lambda z: F.interpolate(z, scale_factor=scale, mode='bicubic', align_corners=False, recompute_scale_factor=False)
+        elif args.deg == 'deblur_uni':
+            import torch.nn.functional as F
+            k = torch.ones((3, 3), device=self.device, dtype=torch.float32) / 9.0
+            kernel = k.view(1, 1, 3, 3)
+            def conv_uni(z):
+                c = z.shape[1]
+                kk = kernel.expand(c, 1, 3, 3).to(z.device)
+                return F.conv2d(z, kk, padding=1, groups=c)
+            A = lambda z: conv_uni(z)
+            Ap = lambda z: conv_uni(z)
+        elif args.deg == 'deblur_gauss':
+            import torch.nn.functional as F
+            sigma = 10.0
+            xs = torch.tensor([-2, -1, 0, 1, 2], dtype=torch.float32, device=self.device)
+            k1 = torch.exp(-0.5 * (xs / sigma) ** 2)
+            k1 = k1 / k1.sum()
+            k2d = torch.ger(k1, k1)
+            kernel = k2d.view(1, 1, 5, 5)
+            def conv_gauss(z):
+                c = z.shape[1]
+                kk = kernel.expand(c, 1, 5, 5).to(z.device)
+                return F.conv2d(z, kk, padding=2, groups=c)
+            A = lambda z: conv_gauss(z)
+            Ap = lambda z: conv_gauss(z)
+        elif args.deg == 'deblur_aniso':
+            import torch.nn.functional as F
+            xs9 = torch.arange(-4, 5, dtype=torch.float32, device=self.device)
+            sigma_y = 20.0
+            ky = torch.exp(-0.5 * (xs9 / sigma_y) ** 2)
+            ky = ky / ky.sum()
+            sigma_x = 1.0
+            kx = torch.exp(-0.5 * (xs9 / sigma_x) ** 2)
+            kx = kx / kx.sum()
+            def conv_aniso(z):
+                c = z.shape[1]
+                kxh = kx.view(1, 1, 1, 9).expand(c, 1, 1, 9).to(z.device)
+                kyv = ky.view(1, 1, 9, 1).expand(c, 1, 9, 1).to(z.device)
+                out = F.conv2d(z, kxh, padding=(0, 4), groups=c)
+                out = F.conv2d(out, kyv, padding=(4, 0), groups=c)
+                return out
+            A = lambda z: conv_aniso(z)
+            Ap = lambda z: conv_aniso(z)
         elif args.deg =='inpainting':
             loaded = np.load("exp/inp_masks/mask.npy")
             mask = torch.from_numpy(loaded).to(self.device)
+            A = lambda z: z*mask
+            Ap = A
+        elif args.deg =='inpainting_box':
+            # create a centered box mask with random side length from range
+            # defaults to 256x256 image
+            H = W = self.config.data.image_size
+            min_len, max_len = (128, 129)
+            if getattr(args, 'mask_len_range', None) is not None:
+                min_len, max_len = args.mask_len_range
+            side = np.random.randint(min_len, max_len + 1)
+            y0 = (H - side) // 2
+            x0 = (W - side) // 2
+            mask_np = np.ones((H, W), dtype=np.float32)
+            mask_np[y0:y0+side, x0:x0+side] = 0.0
+            mask = torch.from_numpy(mask_np).to(self.device)
+            mask = mask.view(1, 1, H, W)
+            A = lambda z: z*mask
+            Ap = A
+        elif args.deg =='inpainting_rand':
+            # random binary mask with keep probability drawn from range
+            H = W = self.config.data.image_size
+            pmin, pmax = (0.3, 0.7)
+            if getattr(args, 'mask_prob_range', None) is not None:
+                pmin, pmax = args.mask_prob_range
+            keep_p = np.random.uniform(pmin, pmax)
+            mask_np = (np.random.rand(H, W) < keep_p).astype(np.float32)
+            mask = torch.from_numpy(mask_np).to(self.device)
+            mask = mask.view(1, 1, H, W)
             A = lambda z: z*mask
             Ap = A
         elif args.deg =='mask_color_sr':
